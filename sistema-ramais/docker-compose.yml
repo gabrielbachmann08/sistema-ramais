@@ -1,0 +1,103 @@
+# Ambiente do Sistema de Ramais: 5 nos fixos (+ 1 cliente sob demanda) em uma
+# rede IP propria. Plano de enderecamento:
+#
+#   Rede     172.28.0.0/24   gateway 172.28.0.1
+#   servidor 172.28.0.10     TCP 5050 (cadastro)  UDP 5051 (heartbeat)
+#   painel   172.28.0.20     TCP 8080 (HTTP)  -> publicado em localhost:8080
+#   telefones 172.28.0.31-33 (ramais 1001, 1002 e 1003)
+#   cliente  172.28.0.40     (terminal, sob demanda)
+#
+# Subir:    docker compose up -d --build
+# Cliente:  docker compose run --rm cliente
+
+x-base: &base
+  build: .
+  image: sistema-ramais
+  restart: unless-stopped
+
+services:
+  servidor:
+    <<: *base
+    command: ["python", "-m", "ramais.servidor"]
+    hostname: servidor
+    environment:
+      ADMIN_USUARIO: ${ADMIN_USUARIO:-admin}
+      ADMIN_SENHA: ${ADMIN_SENHA:?crie o arquivo .env a partir de .env.exemplo}
+      CONSULTA_USUARIO: ${CONSULTA_USUARIO:-consulta}
+      CONSULTA_SENHA: ${CONSULTA_SENHA:?crie o arquivo .env a partir de .env.exemplo}
+    volumes:
+      - dados:/dados        # banco SQLite e logs sobrevivem a reinicios
+    # Sem "ports": o servidor central NAO fica exposto fora da rede interna.
+    networks:
+      ramais_net:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 5050), 2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  painel:
+    <<: *base
+    command: ["python", "-m", "ramais.painel"]
+    hostname: painel
+    environment:
+      RAMAIS_SERVIDOR: servidor   # nome resolvido pelo DNS interno do Docker
+    ports:
+      - "8080:8080"
+    depends_on: [servidor]
+    networks:
+      ramais_net:
+        ipv4_address: 172.28.0.20
+
+  telefone-1001:
+    <<: *base
+    command: ["python", "-m", "ramais.telefone"]
+    hostname: telefone-1001
+    environment: { RAMAIS_SERVIDOR: servidor, RAMAL: "1001" }
+    networks:
+      ramais_net:
+        ipv4_address: 172.28.0.31
+
+  telefone-1002:
+    <<: *base
+    command: ["python", "-m", "ramais.telefone"]
+    hostname: telefone-1002
+    environment: { RAMAIS_SERVIDOR: servidor, RAMAL: "1002" }
+    networks:
+      ramais_net:
+        ipv4_address: 172.28.0.32
+
+  telefone-1003:
+    <<: *base
+    command: ["python", "-m", "ramais.telefone"]
+    hostname: telefone-1003
+    environment: { RAMAIS_SERVIDOR: servidor, RAMAL: "1003" }
+    networks:
+      ramais_net:
+        ipv4_address: 172.28.0.33
+
+  # So sobe quando chamado: docker compose run --rm cliente
+  cliente:
+    <<: *base
+    restart: "no"
+    profiles: ["cli"]
+    command: ["python", "-m", "ramais.cliente"]
+    hostname: cliente
+    environment: { RAMAIS_SERVIDOR: servidor }
+    stdin_open: true
+    tty: true
+    networks:
+      ramais_net:
+        ipv4_address: 172.28.0.40
+
+networks:
+  ramais_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
+
+volumes:
+  dados:
